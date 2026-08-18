@@ -4,17 +4,21 @@
 本文记录在本机（Windows 11 / Node v24.14.0 / PowerShell 5.1）从源码构建并启动 Web 服务端的完整过程，以及踩过的坑，供后续重建参考。
 
 核心理念：**一切从本地源码运行**，不打包、不分发 exe。
-运行链路：`pnpm install` → `pnpm run build` → `corepack pnpm dsh web`。
+运行链路：`pnpm install` → `pnpm run build` → `dsh web`（`dsh` 为全局函数，内部用 `node --import tsx/esm ...` 直启，避开 Windows `process_title` 崩溃；**不要**用 `pnpm dsh web`）。
 
 ---
 
 ## 1. 环境结论
 
 - Node.js：`^22.19.0 || >=24`（本机 v24.14.0，满足）。
-- 包管理器：仓库 `package.json` 固定 `pnpm@11.7.0`，通过 **corepack** 启动。
-- **`pnpm` 不在系统 PATH 上**。本机 `corepack enable` 因无管理员权限失败
-  （写 `C:\Program Files\nodejs\yarn` 报 `EPERM`），所以全环境只能用 `corepack pnpm`，
-  不能直接敲 `pnpm`。
+- 包管理器：仓库 `package.json` 固定 `pnpm@11.7.0`。**corepack 与裸 `pnpm` 均为 11.7.0**：
+  裸 `pnpm` 已通过 `npm i -g pnpm@11.7.0` 装到 `C:\Users\ND\AppData\Roaming\npm`（在 PATH 上），
+  与 corepack 受 `packageManager` 固定的版本一致，可直接敲 `pnpm`（无需 `corepack` 前缀）。
+- `corepack enable` 因无管理员权限失败（写 `C:\Program Files\nodejs\pnpm` 报 `EPERM`），
+  故走 npm 全局安装而非 corepack shim；版本一致，行为无差异。
+- **服务端启动禁止走 pnpm**：`pnpm dsh web` 在 Windows 会让 pnpm 重定向 node 的 stdio，
+  触发 Node `Assertion failed: process_title, file src\win\util.c`（STATUS_STACK_BUFFER_OVERRUN），
+  必须用 `node --import tsx/esm apps/cli/src/bin.ts web` 直启（即全局 `dsh` 函数 / `start-dsh-web.bat`）。
 - 沙箱：landlock 仅 Linux（`native/landlock-run` 明确 win32 不支持）；Windows 走
   `sandbox-windows-acl`（`WRITE_RESTRICTED` token，`enforcement: 'partial'`），开箱即用，无需额外配置。
 - Python SDK 的 `scripts/build-exe-for-python-sdk.ts` 明确不支持 Windows（仅 linux/macos），
@@ -37,7 +41,7 @@
 # 重建
 .\build.ps1
 
-# 启动服务端（默认 http://127.0.0.1:8080）
+# 启动服务端（默认 http://127.0.0.1:3080）
 .\start-dsh-web.bat
 # 或自定义端口 / 监听所有网卡
 powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.0.0.0
@@ -47,22 +51,27 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.
 
 ## 3. 构建踩坑清单
 
-### 坑 1：`corepack enable` 无权限，pnpm 无法进 PATH
-- 现象：`corepack enable` 报 `EPERM: operation not permitted, open 'C:\Program Files\nodejs\yarn'`。
-- 影响：直接敲 `pnpm` 命令 `CommandNotFoundException`。
-- 解决：永远用 `corepack pnpm ...` 代替 `pnpm ...`。脚本里也一律用 `corepack pnpm`。
+### 坑 1：`corepack enable` 无权限，改用 npm 全局装 pnpm（版本须 = packageManager）
+- 现象：`corepack enable` 报 `EPERM: operation not permitted, open 'C:\Program Files\nodejs\pnpm'`。
+- 影响：`corepack enable` 无法把 pnpm shim 写进 Node 安装目录，裸 `pnpm` 不在 PATH。
+- 解决：用 `npm i -g pnpm@11.7.0`（版本须与仓库 `packageManager` 固定值一致）装到
+  `Roaming\npm`，裸 `pnpm` 即可用，且与 corepack 版本一致。
+- 注意：**绝不可用 `pnpm dsh web` 启动服务端**（见坑 1a）。
 
-### 坑 2：`pnpm run build` 整体会卡在最后一步
-- 现象：`pnpm run build` 跑到 `build:web` 阶段报
-  `'pnpm' 不是内部或外部命令`（即 `ELIFECYCLE`）。
-- 根因：`package.json` 中 `build:web` 是 `"pnpm --filter @deepseek-ai/dsh-web-frontend run build"`，
-  该子步骤裸调用 `pnpm`，而本机 `pnpm` 不在 PATH。
-- 解决：拆成两半执行（即 `build.ps1` 的做法）：
-  ```powershell
-  corepack pnpm run build:lib
-  corepack pnpm --filter @deepseek-ai/dsh-web-frontend run build
-  ```
-  （`build:lib` 内部用 `tsc -b` + `tsdown`，不依赖裸 `pnpm` 子调用，可正常完成。）
+### 坑 1a：Windows 上 `pnpm dsh web` 崩溃（process_title 断言）
+- 现象：`corepack pnpm dsh web` / `pnpm dsh web` 启动即崩，Node 报
+  `Assertion failed: process_title, file src\win\util.c` / 退出码 `-1073740791 (0xC0000409)`。
+- 根因：pnpm 在拉起 node 子进程时重定向 stdio，触发 Node Windows 层 `process_title` 断言；
+  与 pnpm 版本、是否 corepack 无关。
+- 解决：服务端一律用 node 直启：`node --import tsx/esm apps/cli/src/bin.ts web`。
+  交互环境直接敲 `dsh web`（已写进 `$PROFILE` 的全局函数），双击用 `start-dsh-web.bat`。
+
+### 坑 2（已缓解）：`pnpm run build` 整体卡最后一步
+- 原现象：`pnpm run build` 跑到 `build:web` 报 `'pnpm' 不是内部或外部命令`（`ELIFECYCLE`），
+  因为 `build:web` 内裸调用 `pnpm --filter @deepseek-ai/dsh-web-frontend run build`，
+  而当时裸 `pnpm` 不在 PATH。
+- 现状：裸 `pnpm` 已在 PATH（坑 1 解决后），`pnpm run build` 可完整跑通；
+  `build.ps1` 仍是一键推荐脚本。
 
 ### 坑 3：PowerShell 5.1 读取无 BOM 的 UTF-8 会解析乱码（中文引号字符串）
 - 现象：用 `Write-Host "未找到 .env ($envFile)..."` 时，PowerShell 报
@@ -89,11 +98,20 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.
 - `scripts/build-exe-for-python-sdk.ts` 的 `PLATFORMS = ['linux','macos']`，
   Windows 是 documented non-goal，不要尝试给 Python SDK 打 Windows exe。
 
+### 坑 7：dshmarket / 新鲜插件安装被供应链策略拦截
+- 现象：`dsh plugin --profile web add <新插件>` 或在该 profile 目录跑 `pnpm install` 报
+  `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`，因 pnpm `verifyDepsBeforeRun` 的
+  `minimumReleaseAge`（约 24h）拦截当天发布的新包（如 `dshmarket` 自身）。
+- 后果：安装中断、`dsh.profile.bundles` 已写入但 `node_modules`/lockfile 未定稿，
+  下次启动报 `cannot resolve profile bundle`。
+- 解决：web profile 目录 `C:\Users\ND\.dsh\profiles\web\.npmrc` 已写
+  `verify-deps-before-run=false`（仅作用于该 profile），放宽后安装可完整跑完。
+
 ---
 
 ## 4. 验证记录
 
-- `corepack pnpm dsh --help`：正常输出 CLI 帮助，确认从源码（`tsx`）启动链路可用。
+- `dsh --help`（全局函数，内部 `node --import tsx/esm ...`）：正常输出 CLI 帮助，确认从源码（`tsx`）启动链路可用。
 - Web 服务 smoke test：后台以 `--port 18080` 启动，输出 `dsh web: http://127.0.0.1:18080`，
   TCP 探测 `LISTENING: True`，进程树可正常清理。证明服务端确实能起来。
 - 原生模块 node-pty / koffi 均通过预编译（prebuild）安装，无需本机编译工具链。
@@ -104,11 +122,12 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.
 
 ```powershell
 # 若依赖或 lockfile 有变化，先安装；否则可只跑下面两步
-corepack pnpm install
-corepack pnpm run build:lib
-corepack pnpm --filter @deepseek-ai/dsh-web-frontend run build
+pnpm install                       # 裸 pnpm 已在 PATH，版本 = corepack = 11.7.0
+pnpm run build:lib
+pnpm --filter @deepseek-ai/dsh-web-frontend run build
 
-# 启动
+# 启动（二选一）
 $env:DSH_ENV_FILE = 'E:\2026Workplace\Code\.env'   # 提供 DEEPSEEK_KEY
-.\start-dsh-web.bat
+.\start-dsh-web.bat                # 双击入口，或：
+dsh web                           # 全局函数，node 直启，避开 pnpm process_title 崩溃
 ```
