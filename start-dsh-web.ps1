@@ -15,6 +15,21 @@
 # Double-click launcher: start-dsh-web.bat
 
 $ErrorActionPreference = 'Stop'
+
+# Force UTF-8 so Chinese server logs render correctly. This script is launched
+# with `powershell -NoProfile` (see start-dsh-web.bat), so the profile's UTF-8
+# setup does not apply here.
+#
+# Encoding note: `Start-Process -RedirectStandardOutput` writes the captured
+# server output using the system ANSI codepage (GBK on zh-CN Windows), so the
+# log files are NOT UTF-8. We read them back with `-Encoding Default` (the same
+# system codepage) to recover the correct Chinese; the console is switched to
+# UTF-8 below so PowerShell renders that string without mojibake.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+chcp.com 65001 | Out-Null
+$PSDefaultParameterValues['Get-Content:Encoding'] = 'Default'
+
 $repoRoot = $PSScriptRoot
 Set-Location -LiteralPath $repoRoot
 

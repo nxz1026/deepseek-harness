@@ -107,6 +107,14 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.
 - 解决：web profile 目录 `C:\Users\ND\.dsh\profiles\web\.npmrc` 已写
   `verify-deps-before-run=false`（仅作用于该 profile），放宽后安装可完整跑完。
 
+### 坑 8：launcher 实时日志里中文乱码（GBK 写入）
+- 现象：`start-dsh-web.ps1` 实时 tail 的日志里中文变乱码（如 lark-link 警告
+  显示为 `鏈厤缃...` 或 `δ���÷...`）。
+- 根因：`Start-Process -RedirectStandardOutput` 把服务端输出按**系统 ANSI 代码页
+  （zh-CN 为 GBK）**写进日志文件，并非 UTF-8；按 UTF-8 或默认读取即乱码。
+- 解决：脚本开头已强制控制台 UTF-8（`chcp 65001` + `[Console]::OutputEncoding`），
+  并把 `Get-Content` 默认编码设为 `Default`（= 系统 ANSI，与写入代码页一致）来还原中文。
+
 ---
 
 ## 4. 验证记录
