@@ -31,20 +31,34 @@
 仓库根目录已提供：
 
 | 文件 | 作用 |
-|---|---|
+|---|
 | `build.ps1` | 一键重建：install + build:lib + web 前端 |
-| `start-dsh-web.ps1` | 加载 `.env`、映射 key、前台启动 `dsh web` |
-| `start-dsh-web.bat` | 双击入口（调用上面的 ps1） |
+| `start-dsh-web.ps1` | 加载 `.env`、映射 key、启动 `dsh web`；支持 `-Headless`（无窗口）与 `-Stop` |
+| `start-dsh-web.bat` | 双击入口：经 Windows Terminal 打开标签页实时看日志（无 conhost 黑框） |
+| `dsh-tray.ps1` | 系统托盘启动器：无窗口常驻，右键控制 启动/停止/开网页/看日志 |
+| `tail-dsh-web-logs.ps1` | 在 Windows Terminal 标签页里实时 tail 日志（托盘"Show Logs"调用） |
+| `dsh-web-launcher.lnk` | 双击入口（推荐）：以隐藏窗口运行 `dsh-tray.ps1`，**只显示托盘图标，无黑框** |
 
-用法：
+两种双击体验（都在仓库根目录）：
+
+1. **1+6 组合（推荐，无黑框）**：双击 `dsh-web-launcher.lnk` → 只出现系统托盘图标，
+   服务端在后台无窗口运行；右键托盘可 打开网页 / 看日志（弹 Windows Terminal）/ 停止 / 退出。
+   这是日常使用方式。
+2. **Option 1 单开（带实时日志窗口）**：双击 `start-dsh-web.bat` → 在 Windows Terminal 里
+   实时 tail 日志（漂亮的终端，无 conhost 黑框），`Ctrl+C` 停止。
+
+无论哪种，底层都是 `node --import tsx/esm apps/cli/src/bin.ts web` 直启，已规避坑 1a。
 ```powershell
 # 重建
 .\build.ps1
 
-# 启动服务端（默认 http://127.0.0.1:3080）
-.\start-dsh-web.bat
-# 或自定义端口 / 监听所有网卡
-powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.0.0.0
+# 1+6：双击 dsh-web-launcher.lnk 即可（等价于下面这条）
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File dsh-tray.ps1
+
+# 仅后台无窗口启动（托盘逻辑同款）
+powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Headless -OpenBrowser
+# 停止
+powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
 ```
 
 ---
@@ -114,6 +128,18 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 --port 8080 --host 0.
   （zh-CN 为 GBK）**写进日志文件，并非 UTF-8；按 UTF-8 或默认读取即乱码。
 - 解决：脚本开头已强制控制台 UTF-8（`chcp 65001` + `[Console]::OutputEncoding`），
   并把 `Get-Content` 默认编码设为 `Default`（= 系统 ANSI，与写入代码页一致）来还原中文。
+
+### 坑 9：`dsh web` 多实例因 task-board ledger 全局锁崩溃（只能单开）
+- 现象：本机已有一个 `dsh web` 在跑（任意端口），再启动第二个实例，第二个在加载
+  `@linxin666/dsh-client-ui-task-board` 时报
+  `Error: task-board ledger is already owned by process <PID>` 然后退出。
+- 根因：该插件的 `HostTaskLedger` 按**用户/全局**加锁，不是按端口；所以两个实例端口不同，
+  第二个也会因锁已被第一个持有而失败。
+- 影响：托盘启动器 `dsh-tray.ps1` 在 3080 上的"Start"会先自动 kill 同端口冲突进程，
+  从而释放全局锁、让新实例成为唯一持有者并成功起来；但若 3080 之外还有别的 `dsh web`
+  （比如之前用全局 `dsh web` 函数起的），新实例仍会撞锁崩溃。
+- 解决 / 注意：**同一时间只能有一个 `dsh web` 实例**。要换用托盘启动器前，先停掉其它实例
+  （托盘右键 Stop，或 `start-dsh-web.ps1 -Stop`）；或在启动器里固定只跑一个。
 
 ---
 

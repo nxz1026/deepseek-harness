@@ -13,6 +13,12 @@
 # Stop with Ctrl+C (prompts to confirm; default Yes, case-insensitive).
 #
 # Double-click launcher: start-dsh-web.bat
+#
+# Headless / control modes (used by the system-tray launcher, dsh-tray.ps1):
+#   .\start-dsh-web.ps1 -Headless [-OpenBrowser]   # start node hidden, no tail window
+#   .\start-dsh-web.ps1 -Stop                       # kill any server on the port
+
+param([switch]$Headless, [switch]$OpenBrowser, [switch]$Stop)
 
 $ErrorActionPreference = 'Stop'
 
@@ -34,20 +40,23 @@ $repoRoot = $PSScriptRoot
 Set-Location -LiteralPath $repoRoot
 
 # Load .env (repo root by default; override via DSH_ENV_FILE) for DEEPSEEK_API_KEY etc.
-$envFile = if ($env:DSH_ENV_FILE) { $env:DSH_ENV_FILE } else { Join-Path $repoRoot '.env' }
-if (Test-Path -LiteralPath $envFile) {
-    Get-Content -LiteralPath $envFile | ForEach-Object {
-        $line = $_.Trim()
-        if ($line -eq '' -or $line.StartsWith('#')) { return }
-        $idx = $line.IndexOf('=')
-        if ($idx -le 0) { return }
-        $key = $line.Substring(0, $idx).Trim()
-        $val = $line.Substring($idx + 1).Trim().Trim('"').Trim("'")
-        if (-not [string]::IsNullOrEmpty($key)) { Set-Item -Path "env:$key" -Value $val }
+# Skipped for -Stop, which does not need credentials.
+if (-not $Stop) {
+    $envFile = if ($env:DSH_ENV_FILE) { $env:DSH_ENV_FILE } else { Join-Path $repoRoot '.env' }
+    if (Test-Path -LiteralPath $envFile) {
+        Get-Content -LiteralPath $envFile | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -eq '' -or $line.StartsWith('#')) { return }
+            $idx = $line.IndexOf('=')
+            if ($idx -le 0) { return }
+            $key = $line.Substring(0, $idx).Trim()
+            $val = $line.Substring($idx + 1).Trim().Trim('"').Trim("'")
+            if (-not [string]::IsNullOrEmpty($key)) { Set-Item -Path "env:$key" -Value $val }
+        }
+        Write-Host ('Loaded credentials from ' + $envFile)
+    } else {
+        Write-Host ('No .env found at ' + $envFile + '; using current process environment.')
     }
-    Write-Host ('Loaded credentials from ' + $envFile)
-} else {
-    Write-Host ('No .env found at ' + $envFile + '; using current process environment.')
 }
 
 # The harness reads DEEPSEEK_API_KEY. If only DEEPSEEK_KEY is present
@@ -69,8 +78,35 @@ function Get-RequestedPort {
     return '3080'
 }
 
+# Kill any server listening on the resolved port (used by -Stop and the tray
+# launcher). A free port is a no-op.
+function Stop-DshWebServer {
+    param([string]$Port = '3080')
+    $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    $pids = $c.OwningProcess | Where-Object { $_ -ne 0 } | Sort-Object -Unique
+    if (-not $pids) {
+        Write-Host "No DSH Web server listening on port $Port."
+        return
+    }
+    $pids | ForEach-Object {
+        Write-Host "Stopping DSH Web server (PID $_) on port $Port..." -ForegroundColor Yellow
+        Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) {
+        Write-Host "Port $Port still occupied after stop." -ForegroundColor Red
+    } else {
+        Write-Host "DSH Web server stopped." -ForegroundColor Green
+    }
+}
+
 $port = Get-RequestedPort -RawArgs $args
 if ($port -notmatch '^\d+$') { $port = '3080' }
+
+if ($Stop) {
+    Stop-DshWebServer -Port $port
+    return
+}
 
 # Free a conflicting listener before booting, so a stale instance (or another
 # app) on the same port does not abort the server with EADDRINUSE. Only an
@@ -82,8 +118,15 @@ if ($conflict) {
     $procs = $pids | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue } |
         Where-Object { $_ } | ForEach-Object { "$($_.Id) ($($_.ProcessName))" }
     Write-Host "Port $port is already in use by: $($procs -join ', ')" -ForegroundColor Yellow
-    $answer = Read-Host 'Kill the conflicting process(es) and continue? [Y/n]'
-    if ($answer -notmatch '^[Nn]') {
+    $killConflict = $false
+    if ($Headless) {
+        $killConflict = $true
+        Write-Host 'Headless mode: killing the conflicting process(es) automatically.' -ForegroundColor Yellow
+    } else {
+        $answer = Read-Host 'Kill the conflicting process(es) and continue? [Y/n]'
+        if ($answer -notmatch '^[Nn]') { $killConflict = $true }
+    }
+    if ($killConflict) {
         $pids | ForEach-Object {
             Write-Host "Killing PID $_ ..." -ForegroundColor Yellow
             Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
@@ -103,12 +146,12 @@ if ($conflict) {
     }
 }
 
-# Start the web server in the background and tail its log live in this window.
-# We invoke node directly with the tsx loader (the same command `pnpm dsh`
-# resolves to) instead of `corepack pnpm dsh`: pnpm spawns node with redirected
-# stdio, and on Windows a Node process with no attached console crashes with
-# "Assertion failed: process_title". Server output is redirected to a log file,
-# which this script tails in real time; pass --port / --host through to `dsh web`.
+# Start the web server in the background. We invoke node directly with the tsx
+# loader (the same command `pnpm dsh` resolves to) instead of `corepack pnpm dsh`:
+# pnpm spawns node with redirected stdio, and on Windows a Node process with no
+# attached console crashes with "Assertion failed: process_title". Server output
+# is redirected to a log file so another process (the tray launcher or a Windows
+# Terminal tail) can read it back; pass --port / --host through to `dsh web`.
 $dshBin = Join-Path $repoRoot 'apps/cli/src/bin.ts'
 $nodeArgs = @('--import', 'tsx/esm', $dshBin, 'web') + $args
 
@@ -118,6 +161,27 @@ Remove-Item -LiteralPath $logOut, $logErr -ErrorAction SilentlyContinue
 
 # Start-Process cannot redirect stdout and stderr to the same file, so use two
 # and tail both (see windows-build-guide.md 坑 4).
+if ($Headless) {
+    # No window, no tail: the server runs detached and the tray / -Stop manages
+    # it. Poll the port, optionally open the browser, then return so the calling
+    # process (the tray) keeps control.
+    $server = Start-Process -FilePath 'node' -ArgumentList $nodeArgs `
+        -WindowStyle Hidden -RedirectStandardOutput $logOut -RedirectStandardError $logErr -PassThru
+    $bootSecs = 0
+    while ($bootSecs -lt 40) {
+        if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { break }
+        Start-Sleep -Seconds 1
+        $bootSecs++
+    }
+    if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
+        Write-Host "DSH Web server started (PID $($server.Id)) at http://127.0.0.1:$port" -ForegroundColor Green
+        if ($OpenBrowser) { Start-Process "http://127.0.0.1:$port" }
+    } else {
+        Write-Host "DSH Web server did not come up on port $port within 40s. Check $logErr" -ForegroundColor Red
+    }
+    return
+}
+
 $server = Start-Process -FilePath 'node' -ArgumentList $nodeArgs `
     -NoNewWindow -RedirectStandardOutput $logOut -RedirectStandardError $logErr -PassThru
 
