@@ -1,7 +1,7 @@
 # DSH Web system-tray launcher (1+6 combo):
 #   - keeps the server running HEADLESS (no console window at all), and
-#   - the tray icon is the control surface (start / stop / open UI / show logs),
-#     while "Show Logs" opens a Windows Terminal tab that tails the logs.
+#   - the tray icon is the control surface (start / stop / restart / open UI /
+#     show logs), while "Show Logs" opens a Windows Terminal tab that tails logs.
 #
 # Entry point: dsh-web-launcher.lnk (created alongside this file), which runs
 #   powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File dsh-tray.ps1
@@ -21,9 +21,9 @@ $port = 3080
 
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
 
-function Get-DshPid {
+function Get-DshRunning {
     $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    $c.OwningProcess | Where-Object { $_ -ne 0 } | Sort-Object -Unique
+    ($c.OwningProcess | Where-Object { $_ -ne 0 } | Measure-Object).Count -gt 0
 }
 
 function Start-Dsh {
@@ -52,6 +52,12 @@ function ShowLogs {
     }
 }
 
+function Restart-Dsh {
+    Stop-Dsh
+    Start-Sleep -Seconds 2
+    Start-Dsh
+}
+
 # --- Tray icon + context menu ---
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = [System.Drawing.SystemIcons]::Application
@@ -66,6 +72,8 @@ $openUI.Add_Click({ Start-Process "http://127.0.0.1:$port" })
 $showLogs = $menu.Items.Add('Show Logs (Windows Terminal)')
 $showLogs.Add_Click({ ShowLogs })
 
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
 $start = $menu.Items.Add('Start Server')
 $start.Add_Click({
         Start-Dsh
@@ -78,6 +86,12 @@ $stop.Add_Click({
         $notify.ShowBalloonTip(3000, 'DSH Web', 'Stopping server...', 'Info')
     })
 
+$restart = $menu.Items.Add('Restart Server')
+$restart.Add_Click({
+        Restart-Dsh
+        $notify.ShowBalloonTip(3000, 'DSH Web', 'Restarting server...', 'Info')
+    })
+
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 $exit = $menu.Items.Add('Exit (stop server)')
@@ -86,6 +100,17 @@ $exit.Add_Click({
         $notify.Visible = $false
         [System.Windows.Forms.Application]::Exit()
     })
+
+# Start / Stop / Restart are mutually exclusive with the server's running state:
+# only the valid action(s) for the current state are enabled.
+function Update-MenuState {
+    $running = Get-DshRunning
+    $start.Enabled = -not $running
+    $stop.Enabled = $running
+    $restart.Enabled = $running
+    $notify.Text = if ($running) { "DSH Web - running (:${port})" } else { "DSH Web - stopped (:${port})" }
+}
+$menu.Add_Opening({ Update-MenuState })
 
 $notify.ContextMenuStrip = $menu
 $notify.Add_DoubleClick({ Start-Process "http://127.0.0.1:$port" })
