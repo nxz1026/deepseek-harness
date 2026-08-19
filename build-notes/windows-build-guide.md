@@ -18,7 +18,7 @@
   故走 npm 全局安装而非 corepack shim；版本一致，行为无差异。
 - **服务端启动禁止走 pnpm**：`pnpm dsh web` 在 Windows 会让 pnpm 重定向 node 的 stdio，
   触发 Node `Assertion failed: process_title, file src\win\util.c`（STATUS_STACK_BUFFER_OVERRUN），
-  必须用 `node --import tsx/esm apps/cli/src/bin.ts web` 直启（即全局 `dsh` 函数 / `start-dsh-web.bat`）。
+  必须用 `node --import tsx/esm apps/cli/src/bin.ts web` 直启（即全局 `dsh` 函数）。
 - 沙箱：landlock 仅 Linux（`native/landlock-run` 明确 win32 不支持）；Windows 走
   `sandbox-windows-acl`（`WRITE_RESTRICTED` token，`enforcement: 'partial'`），开箱即用，无需额外配置。
 - Python SDK 的 `scripts/build-exe-for-python-sdk.ts` 明确不支持 Windows（仅 linux/macos），
@@ -28,37 +28,18 @@
 
 ## 2. 一键脚本
 
-仓库根目录已提供：
+仓库根目录提供 `build.ps1` 一键重建（install + build:lib + web 前端）。
 
-| 文件 | 作用 |
-|---|
-| `build.ps1` | 一键重建：install + build:lib + web 前端 |
-| `start-dsh-web.ps1` | 加载 `.env`、映射 key、启动 `dsh web`；支持 `-Headless`（无窗口）与 `-Stop` |
-| `start-dsh-web.bat` | 双击入口：经 Windows Terminal 打开标签页实时看日志（无 conhost 黑框） |
-| `dsh-tray.ps1` | 系统托盘启动器：无窗口常驻，右键控制 启动/停止/开网页/看日志 |
-| `tail-dsh-web-logs.ps1` | 在 Windows Terminal 标签页里实时 tail 日志（托盘"Show Logs"调用） |
-| `dsh-web-launcher.lnk` | 双击入口（推荐）：以隐藏窗口运行 `dsh-tray.ps1`，**只显示托盘图标，无黑框** |
+> 启动 / 托盘脚本（`start-dsh-web.ps1`、`start-dsh-web.bat`、`dsh-tray.ps1`、
+> `tail-dsh-web-logs.ps1`、`dsh-web-launcher.lnk`）已随托盘功能迁移到独立项目，
+> 本仓库不再提供；自定义端口 / 主机、无窗口启动、托盘控制等能力请使用迁移后的项目。
 
-两种双击体验（都在仓库根目录）：
-
-1. **1+6 组合（推荐，无黑框）**：双击 `dsh-web-launcher.lnk` → 只出现系统托盘图标，
-   服务端在后台无窗口运行；右键托盘可 打开网页 / 看日志（弹 Windows Terminal）/ 停止 / 退出。
-   这是日常使用方式。
-2. **Option 1 单开（带实时日志窗口）**：双击 `start-dsh-web.bat` → 在 Windows Terminal 里
-   实时 tail 日志（漂亮的终端，无 conhost 黑框），`Ctrl+C` 停止。
-
-无论哪种，底层都是 `node --import tsx/esm apps/cli/src/bin.ts web` 直启，已规避坑 1a。
 ```powershell
 # 重建
 .\build.ps1
 
-# 1+6：双击 dsh-web-launcher.lnk 即可（等价于下面这条）
-powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File dsh-tray.ps1
-
-# 仅后台无窗口启动（托盘逻辑同款）
-powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Headless -OpenBrowser
-# 停止
-powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
+# 启动服务端（node 直启，已规避坑 1a）
+dsh web
 ```
 
 ---
@@ -78,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
 - 根因：pnpm 在拉起 node 子进程时重定向 stdio，触发 Node Windows 层 `process_title` 断言；
   与 pnpm 版本、是否 corepack 无关。
 - 解决：服务端一律用 node 直启：`node --import tsx/esm apps/cli/src/bin.ts web`。
-  交互环境直接敲 `dsh web`（已写进 `$PROFILE` 的全局函数），双击用 `start-dsh-web.bat`。
+  交互环境直接敲 `dsh web`（已写进 `$PROFILE` 的全局函数）。
 
 ### 坑 2（已缓解）：`pnpm run build` 整体卡最后一步
 - 原现象：`pnpm run build` 跑到 `build:web` 报 `'pnpm' 不是内部或外部命令`（`ELIFECYCLE`），
@@ -103,9 +84,9 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
 ### 坑 5：API key 变量名不匹配
 - 现象：harness 读取 `DEEPSEEK_API_KEY`；而本机共享 `.env`（`E:\2026Workplace\Code\.env`）
   里是 `DEEPSEEK_KEY`。
-- 解决：`start-dsh-web.ps1` 已加 fallback——若缺 `DEEPSEEK_API_KEY` 但存在 `DEEPSEEK_KEY`，
-  自动映射。运行前设置 `$env:DSH_ENV_FILE='E:\2026Workplace\Code\.env'` 即可开箱即用；
-  或把 `DEEPSEEK_API_KEY=sk-...` 写进仓库根 `.env`。
+- 解决：把 `DEEPSEEK_API_KEY=sk-...` 写进仓库根 `.env`，或设置
+  `$env:DSH_ENV_FILE='E:\2026Workplace\Code\.env'` 并在启动前手动映射
+  `$env:DEEPSEEK_API_KEY = $env:DEEPSEEK_KEY`。
 
 ### 坑 6：landlock / Python exe 不适用 Windows
 - landlock 沙箱仅 Linux（`win32` 平台被跳过，属预期）。Windows 自动走 ACL 沙箱。
@@ -121,13 +102,13 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
 - 解决：web profile 目录 `C:\Users\ND\.dsh\profiles\web\.npmrc` 已写
   `verify-deps-before-run=false`（仅作用于该 profile），放宽后安装可完整跑完。
 
-### 坑 8：launcher 实时日志里中文乱码（GBK 写入）
-- 现象：`start-dsh-web.ps1` 实时 tail 的日志里中文变乱码（如 lark-link 警告
-  显示为 `鏈厤缃...` 或 `δ���÷...`）。
-- 根因：`Start-Process -RedirectStandardOutput` 把服务端输出按**系统 ANSI 代码页
-  （zh-CN 为 GBK）**写进日志文件，并非 UTF-8；按 UTF-8 或默认读取即乱码。
-- 解决：脚本开头已强制控制台 UTF-8（`chcp 65001` + `[Console]::OutputEncoding`），
-  并把 `Get-Content` 默认编码设为 `Default`（= 系统 ANSI，与写入代码页一致）来还原中文。
+### 坑 8：`Start-Process` 重定向日志里中文乱码（GBK 写入）
+- 现象：`Start-Process -RedirectStandardOutput` 重定向的日志里中文变乱码（如 lark-link
+  警告显示为 `鏈鏈...` 或 `δ...`）。
+- 根因：重定向把服务端输出按**系统 ANSI 代码页（zh-CN 为 GBK）**写进日志文件，
+  并非 UTF-8；按 UTF-8 或默认读取即乱码。
+- 解决：先强制控制台 UTF-8（`chcp 65001` + `[Console]::OutputEncoding`），再把
+  `Get-Content` 默认编码设为 `Default`（= 系统 ANSI，与写入代码页一致）来还原中文。
 
 ### 坑 9：`dsh web` 多实例因 task-board ledger 全局锁崩溃（只能单开）
 - 现象：本机已有一个 `dsh web` 在跑（任意端口），再启动第二个实例，第二个在加载
@@ -135,11 +116,9 @@ powershell -ExecutionPolicy Bypass -File start-dsh-web.ps1 -Stop
   `Error: task-board ledger is already owned by process <PID>` 然后退出。
 - 根因：该插件的 `HostTaskLedger` 按**用户/全局**加锁，不是按端口；所以两个实例端口不同，
   第二个也会因锁已被第一个持有而失败。
-- 影响：托盘启动器 `dsh-tray.ps1` 在 3080 上的"Start"会先自动 kill 同端口冲突进程，
-  从而释放全局锁、让新实例成为唯一持有者并成功起来；但若 3080 之外还有别的 `dsh web`
-  （比如之前用全局 `dsh web` 函数起的），新实例仍会撞锁崩溃。
-- 解决 / 注意：**同一时间只能有一个 `dsh web` 实例**。要换用托盘启动器前，先停掉其它实例
-  （托盘右键 Stop，或 `start-dsh-web.ps1 -Stop`）；或在启动器里固定只跑一个。
+- 影响：若 3080 之外还有别的 `dsh web` 在跑，新实例仍会撞锁崩溃。
+- 解决 / 注意：**同一时间只能有一个 `dsh web` 实例**。启动新实例前先停掉其它实例
+  （按占用端口找到进程并 `Stop-Process`）。
 
 ---
 
@@ -160,8 +139,7 @@ pnpm install                       # 裸 pnpm 已在 PATH，版本 = corepack = 
 pnpm run build:lib
 pnpm --filter @deepseek-ai/dsh-web-frontend run build
 
-# 启动（二选一）
-$env:DSH_ENV_FILE = 'E:\2026Workplace\Code\.env'   # 提供 DEEPSEEK_KEY
-.\start-dsh-web.bat                # 双击入口，或：
-dsh web                           # 全局函数，node 直启，避开 pnpm process_title 崩溃
+# 启动
+$env:DSH_ENV_FILE = 'E:\2026Workplace\Code\.env'   # 提供 DEEPSEEK_KEY（或写入仓库根 .env）
+dsh web                            # 全局函数，node 直启，避开 pnpm process_title 崩溃
 ```

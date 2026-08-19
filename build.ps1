@@ -20,4 +20,4 @@ corepack pnpm run build:lib
 #    that npm-script step invokes bare `pnpm`, which is missing from PATH.
 corepack pnpm --filter @deepseek-ai/dsh-web-frontend run build
 
-Write-Host 'Build complete. Start the server with .\start-dsh-web.bat'
+Write-Host 'Build complete. Start the server with: dsh web'
