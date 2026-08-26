@@ -30,10 +30,6 @@
 
 仓库根目录提供 `build.ps1` 一键重建（install + build:lib + web 前端）。
 
-> 启动 / 托盘脚本（`start-dsh-web.ps1`、`start-dsh-web.bat`、`dsh-tray.ps1`、
-> `tail-dsh-web-logs.ps1`、`dsh-web-launcher.lnk`）已随托盘功能迁移到独立项目，
-> 本仓库不再提供；自定义端口 / 主机、无窗口启动、托盘控制等能力请使用迁移后的项目。
-
 ```powershell
 # 重建
 .\build.ps1
